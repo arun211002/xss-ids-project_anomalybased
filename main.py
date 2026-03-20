@@ -1,133 +1,111 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MICE IDS Protection</title>
+import os
+import re
+from flask import Flask, render_template, request, jsonify
+from pymongo import MongoClient
+from datetime import datetime
+from collections import Counter
 
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+app = Flask(__name__)
 
-    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600&display=swap" rel="stylesheet">
+# --- MONGODB CONNECTION WITH ANTI-HANG TIMEOUTS ---
+MONGO_URI = os.getenv("MONGO_URI")
 
-    <style>
-        body {
-            font-family: 'Orbitron', sans-serif;
-            padding-top: 60px;
-            color: #00ffcc;
-            background: linear-gradient(135deg, #000000, #0a0a0a, #000000);
-            overflow-x: hidden;
-            min-height: 100vh;
-        }
+# We add specific timeouts to prevent the "rotating cursor" issue
+client = MongoClient(
+    MONGO_URI,
+    serverSelectionTimeoutMS=5000, # 5s to find the server
+    connectTimeoutMS=10000,        # 10s to establish connection
+    socketTimeoutMS=15000,         # 15s for data transfer
+    retryWrites=True
+)
+db = client.ids_database
+logs_collection = db.attack_logs
 
-        /* WATERMARK Background */
-        .watermark {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            width: 700px;
-            height: 700px;
-            transform: translate(-50%, -50%);
-            background: url('https://drive.google.com/uc?export=view&id=1zxOeBsJ4BDf0edEbY1D2') no-repeat center;
-            background-size: contain;
-            opacity: 0.1;
-            z-index: -1;
-        }
+# --- HYBRID DETECTION SYSTEM (Signatures + Anomalies) ---
+def detect_intrusion(user_input):
+    # 1. SIGNATURE-BASED: Matching known 120+ attack patterns
+    signatures = [
+        r"<script.*?>", r"javascript:", r"onload=", r"onerror=", 
+        r"<img.*?src=", r"alert\(", r"document\.cookie",
+        r"SELECT .* FROM", r"UNION SELECT", r"OR '1'='1'", r"DROP TABLE",
+        r"window\.location", r"eval\(", r"<iframe>", r"document\.write"
+    ]
+    
+    for pattern in signatures:
+        if re.search(pattern, user_input, re.IGNORECASE):
+            return True, "Signature: Malicious Pattern"
 
-        .tagline {
-            font-size: 0.9rem;
-            letter-spacing: 5px;
-            text-transform: uppercase;
-            color: #00ff99;
-            margin-bottom: 2rem;
-            text-align: center;
-        }
+    # 2. ANOMALY-BASED: Behavioral detection
+    special_chars = re.findall(r"[<>{}\[\]()=;']", user_input)
+    
+    if len(user_input) > 120:
+        return True, "Anomaly: Input Length Exceeded"
+    
+    if len(special_chars) > 8:
+        return True, "Anomaly: High Symbol Density"
 
-        .card {
-            background: rgba(20, 20, 20, 0.8);
-            border: 1px solid #00ffcc;
-            border-radius: 15px;
-            box-shadow: 0 0 15px rgba(0, 255, 204, 0.2);
-            backdrop-filter: blur(10px);
-        }
+    return False, None
 
-        .form-control {
-            background: #000;
-            border: 1px solid #00ffcc;
-            color: #00ffcc;
-        }
+# --- ROUTES ---
 
-        .form-control:focus {
-            background: #050505;
-            color: #00ffcc;
-            border-color: #00ff99;
-            box-shadow: 0 0 10px rgba(0, 255, 153, 0.5);
-        }
-
-        .btn-dark {
-            background: linear-gradient(45deg, #00ffcc, #009966);
-            border: none;
-            color: black;
-            font-weight: 600;
-            transition: 0.3s;
-        }
-
-        .btn-dark:hover {
-            box-shadow: 0 0 20px rgba(0, 255, 150, 0.4);
-            transform: scale(1.04);
-            color: black;
-        }
-
-        .alert {
-            border-radius: 10px;
-            background: rgba(0, 0, 0, 0.7);
-            border: 1px solid currentColor;
-            margin-bottom: 20px;
-        }
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    message = None
+    status_class = "alert-info"
+    
+    if request.method == 'POST':
+        user_input = request.form.get('user_input', '')
+        is_attack, reason = detect_intrusion(user_input)
         
-        .alert-danger { color: #ff4d4d; border-color: #ff4d4d; box-shadow: 0 0 10px rgba(255, 77, 77, 0.3); }
-        .alert-success { color: #00ffcc; border-color: #00ffcc; box-shadow: 0 0 10px rgba(0, 255, 204, 0.3); }
+        # CAPTURE REAL IP: Bypassing Render's proxy to see the actual attacker
+        user_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0]
 
-        .nav-link-custom {
-            color: #66ffcc;
-            text-decoration: none;
-            font-size: 0.8rem;
-            transition: 0.3s;
-        }
+        if is_attack:
+            log_entry = {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "payload": user_input,
+                "ip": user_ip,
+                "type": reason,
+                "status": "Blocked"
+            }
+            # Try/Except prevents the site from freezing if MongoDB is slow
+            try:
+                logs_collection.insert_one(log_entry)
+            except Exception as e:
+                print(f"Database Log Error: {e}")
+            
+            message = f"🚨 Security Alert: {reason}!"
+            status_class = "alert-danger"
+        else:
+            message = "✅ Input verified and processed safely."
+            status_class = "alert-success"
+            
+    return render_template('xss_both_demo.html', message=message, status_class=status_class)
 
-        .nav-link-custom:hover {
-            color: #00ff99;
-            text-shadow: 0 0 8px rgba(0, 255, 153, 0.6);
-        }
-    </style>
-</head>
+@app.route('/dashboard')
+def dashboard():
+    try:
+        # Limit to 200 logs to prevent memory crashes on Free Tier
+        all_logs = list(logs_collection.find({}, {'_id': 0}).sort("timestamp", -1).limit(200))
 
-<body>
-    <div class="watermark"></div>
-
-    <div class="container text-center" style="max-width: 500px;">
+        # Data processing for your Chart.js graphs
+        type_counts = Counter(log.get('type', 'Unknown') for log in all_logs)
+        ip_counts = Counter(log.get('ip', 'Unknown') for log in all_logs).most_common(5)
         
-        <h2 class="mb-2">MICE <sub>XSS Secure IDS</sub></h2>
-        <div class="tagline">let’s seek</div>
-        
-        {% if message %}
-        <div class="alert {{ status_class }} shadow-sm">
-            {{ message }}
-        </div>
-        {% endif %}
+        chart_data = {
+            "type_labels": list(type_counts.keys()),
+            "type_values": list(type_counts.values()),
+            "ip_labels": [item[0] for item in ip_counts],
+            "ip_values": [item[1] for item in ip_counts],
+            "total_count": len(all_logs)
+        }
+    except Exception as e:
+        print(f"Dashboard Load Error: {e}")
+        chart_data = {"type_labels":[], "type_values":[], "ip_labels":[], "ip_values":[], "total_count":0}
+        all_logs = []
 
-        <div class="card p-4 shadow">
-            <form method="POST">
-                <div class="mb-3 text-start">
-                    <label class="form-label fw-bold">Test Security Input:</label>
-                    <input type="text" name="user_input" class="form-control" placeholder="Type <script> to test..." required>
-                </div>
-                <button type="submit" class="btn btn-dark w-100">Submit to IDS</button>
-            </form>
-        </div>
+    return render_template('dashboard.html', logs=all_logs, chart_data=chart_data)
 
-        <div class="mt-4">
-            <a href="/dashboard" class="nav-link-custom">View Real-time Threat Analytics →</a>
-        </div>
-    </div>
-</body>
-</html>
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
