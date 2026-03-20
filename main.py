@@ -1,85 +1,133 @@
-import os
-import re
-import math
-from flask import Flask, render_template, request
-from pymongo import MongoClient
-from datetime import datetime
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MICE IDS Protection</title>
 
-app = Flask(__name__)
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 
-# --- 1. MONGODB CONNECTION ---
-# Render pulls the 'MONGO_URI' from your environment variables automatically
-MONGO_URI = os.getenv("MONGO_URI")
-client = MongoClient(MONGO_URI)
-db = client.ids_database
-logs_collection = db.attack_logs
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600&display=swap" rel="stylesheet">
 
-# --- 2. IDS DETECTION LOGIC ---
+    <style>
+        body {
+            font-family: 'Orbitron', sans-serif;
+            padding-top: 60px;
+            color: #00ffcc;
+            background: linear-gradient(135deg, #000000, #0a0a0a, #000000);
+            overflow-x: hidden;
+            min-height: 100vh;
+        }
 
-def signature_detection(payload):
-    """Detects XSS using regex patterns."""
-    patterns = [r"<script.*?>", r"javascript:", r"onload=", r"onerror=", r"<img.*?src="]
-    for pattern in patterns:
-        if re.search(pattern, payload, re.IGNORECASE):
-            return True
-    return False
+        /* WATERMARK Background */
+        .watermark {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            width: 700px;
+            height: 700px;
+            transform: translate(-50%, -50%);
+            background: url('https://drive.google.com/uc?export=view&id=1zxOeBsJ4BDf0edEbY1D2') no-repeat center;
+            background-size: contain;
+            opacity: 0.1;
+            z-index: -1;
+        }
 
-def anomaly_detection(payload):
-    """Detects XSS based on statistical scoring (anomaly-based)."""
-    special_chars = ['<', '>', '(', ')', '[', ']', '{', '}', '/', '\\', '\'', '"', ';', ':']
-    score = 0
-    if not payload:
-        return False
-    
-    # Increase score for every special character found
-    for char in payload:
-        if char in special_chars:
-            score += 1
-            
-    # If more than 15% of the string is special characters, flag it
-    threshold = 0.15
-    return (score / len(payload)) > threshold
+        .tagline {
+            font-size: 0.9rem;
+            letter-spacing: 5px;
+            text-transform: uppercase;
+            color: #00ff99;
+            margin-bottom: 2rem;
+            text-align: center;
+        }
 
-def log_attack(payload, method, ip_address):
-    """Saves the attack details to MongoDB Atlas."""
-    attack_data = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "payload": payload,
-        "method": method,
-        "ip": ip_address,
-        "status": "Blocked"
-    }
-    logs_collection.insert_one(attack_data)
+        .card {
+            background: rgba(20, 20, 20, 0.8);
+            border: 1px solid #00ffcc;
+            border-radius: 15px;
+            box-shadow: 0 0 15px rgba(0, 255, 204, 0.2);
+            backdrop-filter: blur(10px);
+        }
 
-# --- 3. ROUTES ---
+        .form-control {
+            background: #000;
+            border: 1px solid #00ffcc;
+            color: #00ffcc;
+        }
 
-@app.route('/', methods=['GET', 'POST'])
-def home():
-    result = None
-    if request.method == 'POST':
-        user_input = request.form.get('user_input', '')
+        .form-control:focus {
+            background: #050505;
+            color: #00ffcc;
+            border-color: #00ff99;
+            box-shadow: 0 0 10px rgba(0, 255, 153, 0.5);
+        }
+
+        .btn-dark {
+            background: linear-gradient(45deg, #00ffcc, #009966);
+            border: none;
+            color: black;
+            font-weight: 600;
+            transition: 0.3s;
+        }
+
+        .btn-dark:hover {
+            box-shadow: 0 0 20px rgba(0, 255, 150, 0.4);
+            transform: scale(1.04);
+            color: black;
+        }
+
+        .alert {
+            border-radius: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            border: 1px solid currentColor;
+            margin-bottom: 20px;
+        }
         
-        # Hybrid Detection
-        is_sig = signature_detection(user_input)
-        is_anom = anomaly_detection(user_input)
+        .alert-danger { color: #ff4d4d; border-color: #ff4d4d; box-shadow: 0 0 10px rgba(255, 77, 77, 0.3); }
+        .alert-success { color: #00ffcc; border-color: #00ffcc; box-shadow: 0 0 10px rgba(0, 255, 204, 0.3); }
+
+        .nav-link-custom {
+            color: #66ffcc;
+            text-decoration: none;
+            font-size: 0.8rem;
+            transition: 0.3s;
+        }
+
+        .nav-link-custom:hover {
+            color: #00ff99;
+            text-shadow: 0 0 8px rgba(0, 255, 153, 0.6);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="watermark"></div>
+
+    <div class="container text-center" style="max-width: 500px;">
         
-        if is_sig or is_anom:
-            method = "Signature Match" if is_sig else "Anomaly Detected"
-            log_attack(user_input, method, request.remote_addr)
-            result = f"🚨 XSS Attack Blocked ({method})!"
-        else:
-            result = "✅ Safe input received."
-            
-    return render_template('xss_both_demo.html', result=result)
+        <h2 class="mb-2">MICE <sub>XSS Secure IDS</sub></h2>
+        <div class="tagline">let’s seek</div>
+        
+        {% if message %}
+        <div class="alert {{ status_class }} shadow-sm">
+            {{ message }}
+        </div>
+        {% endif %}
 
-@app.route('/dashboard')
-def dashboard():
-    """Fetches all logs from MongoDB for display."""
-    # .find({}, {'_id': 0}) hides MongoDB's internal ID
-    # .sort("timestamp", -1) puts the newest attacks at the top
-    all_logs = list(logs_collection.find({}, {'_id': 0}).sort("timestamp", -1))
-    return render_template('dashboard.html', logs=all_logs)
+        <div class="card p-4 shadow">
+            <form method="POST">
+                <div class="mb-3 text-start">
+                    <label class="form-label fw-bold">Test Security Input:</label>
+                    <input type="text" name="user_input" class="form-control" placeholder="Type <script> to test..." required>
+                </div>
+                <button type="submit" class="btn btn-dark w-100">Submit to IDS</button>
+            </form>
+        </div>
 
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+        <div class="mt-4">
+            <a href="/dashboard" class="nav-link-custom">View Real-time Threat Analytics →</a>
+        </div>
+    </div>
+</body>
+</html>
