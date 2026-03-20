@@ -1,46 +1,85 @@
-from flask import Flask, render_template, request, render_template_string
-import ids_logic
 import os
+import re
+import math
+from flask import Flask, render_template, request
+from pymongo import MongoClient
+from datetime import datetime
 
-# Initialize Flask with the correct template folder
-app = Flask(__name__, template_folder='templates')
+app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return render_template('xss_both_demo.html')
+# --- 1. MONGODB CONNECTION ---
+# Render pulls the 'MONGO_URI' from your environment variables automatically
+MONGO_URI = os.getenv("MONGO_URI")
+client = MongoClient(MONGO_URI)
+db = client.ids_database
+logs_collection = db.attack_logs
 
-@app.route('/check')
-def check_xss():
-    user_input = request.args.get('input', '')
-    client_ip = request.remote_addr
-    dest_ip = "127.0.0.1"
+# --- 2. IDS DETECTION LOGIC ---
 
-    # Use the hybrid detection logic
-    is_detected, reason = ids_logic.hybrid_detect(user_input)
+def signature_detection(payload):
+    """Detects XSS using regex patterns."""
+    patterns = [r"<script.*?>", r"javascript:", r"onload=", r"onerror=", r"<img.*?src="]
+    for pattern in patterns:
+        if re.search(pattern, payload, re.IGNORECASE):
+            return True
+    return False
 
-    if is_detected:
-        ids_logic.log_attack(client_ip, dest_ip, user_input, reason)
-        return f"""
-        <div style="font-family:sans-serif; background:#220000; color:#ff4444; padding:20px; border:2px solid red;">
-            <h2>🚨 XSS Attack Blocked by IDS!</h2>
-            <p><strong>Detection Method:</strong> {reason}</p>
-            <p><strong>Malicious Payload:</strong> <code>{user_input}</code></p>
-            <a href="/" style="color:white;">Try another test</a>
-        </div>
-        """
+def anomaly_detection(payload):
+    """Detects XSS based on statistical scoring (anomaly-based)."""
+    special_chars = ['<', '>', '(', ')', '[', ']', '{', '}', '/', '\\', '\'', '"', ';', ':']
+    score = 0
+    if not payload:
+        return False
     
-    return f"""
-    <div style="font-family:sans-serif; color:green; padding:20px;">
-        <h3>✅ Input processed safely</h3>
-        <p>Your input: {user_input}</p>
-        <a href="/">Back to home</a>
-    </div>
-    """
+    # Increase score for every special character found
+    for char in payload:
+        if char in special_chars:
+            score += 1
+            
+    # If more than 15% of the string is special characters, flag it
+    threshold = 0.15
+    return (score / len(payload)) > threshold
+
+def log_attack(payload, method, ip_address):
+    """Saves the attack details to MongoDB Atlas."""
+    attack_data = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "payload": payload,
+        "method": method,
+        "ip": ip_address,
+        "status": "Blocked"
+    }
+    logs_collection.insert_one(attack_data)
+
+# --- 3. ROUTES ---
+
+@app.route('/', methods=['GET', 'POST'])
+def home():
+    result = None
+    if request.method == 'POST':
+        user_input = request.form.get('user_input', '')
+        
+        # Hybrid Detection
+        is_sig = signature_detection(user_input)
+        is_anom = anomaly_detection(user_input)
+        
+        if is_sig or is_anom:
+            method = "Signature Match" if is_sig else "Anomaly Detected"
+            log_attack(user_input, method, request.remote_addr)
+            result = f"🚨 XSS Attack Blocked ({method})!"
+        else:
+            result = "✅ Safe input received."
+            
+    return render_template('xss_both_demo.html', result=result)
 
 @app.route('/dashboard')
 def dashboard():
-    logs = ids_logic.db.all()
-    return render_template('dashboard.html', logs=logs)
+    """Fetches all logs from MongoDB for display."""
+    # .find({}, {'_id': 0}) hides MongoDB's internal ID
+    # .sort("timestamp", -1) puts the newest attacks at the top
+    all_logs = list(logs_collection.find({}, {'_id': 0}).sort("timestamp", -1))
+    return render_template('dashboard.html', logs=all_logs)
 
 if __name__ == '__main__':
-    app.run(debug=True, port=8000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
